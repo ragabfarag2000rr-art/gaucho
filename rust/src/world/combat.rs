@@ -1,8 +1,8 @@
 /*#######################
- · https://github.com/ibolzov
- · gaucho - conquer mobile private server
- · with love from bolzov (ᵔᴥᵔ)
- #######################*/
+  · https://github.com/ibolzov
+  · gaucho - conquer mobile private server
+  · with love from bolzov (ᵔᴥᵔ)
+  #######################*/
 
 use super::*;
 
@@ -44,12 +44,13 @@ impl World {
     }
 
     pub(super) fn can_pk(&self, cid: u64, tc: u64) -> bool {
-        cid != tc && may_pk(&self.players[&cid], &self.players[&tc], Instant::now())
+        cid != tc && self.players.contains_key(&cid) && self.players.contains_key(&tc)
+            && may_pk(&self.players[&cid], &self.players[&tc], Instant::now())
     }
 
     pub(super) fn pk_hit(&mut self, cid: u64, tc: u64) {
         let now = Instant::now();
-        if criminal(&self.players[&tc], now) {
+        if !self.players.contains_key(&cid) || !self.players.contains_key(&tc) || criminal(&self.players[&tc], now) {
             return;
         }
         let a = self.players.get_mut(&cid).unwrap();
@@ -61,7 +62,7 @@ impl World {
     }
 
     fn pk_kill(&mut self, ac: u64) {
-        let a = self.players.get_mut(&ac).unwrap();
+        let Some(a) = self.players.get_mut(&ac) else { return };
         a.h.pk += 10;
         let (id, pk) = (a.h.id, a.h.pk);
         println!("[WORLD] {} pk points {pk}", a.h.name);
@@ -86,7 +87,7 @@ impl World {
             }
         }
         for cid in changed {
-            if self.players[&cid].ready {
+            if self.players.get(&cid).is_some_and(|p| p.ready) {
                 self.send_status(cid);
             }
         }
@@ -181,12 +182,14 @@ impl World {
     }
 
     pub(super) fn hit_player(&mut self, cid: u64, tc: u64) {
-        let (a, v) = (&self.players[&cid], &self.players[&tc]);
+        let Some((a, v)) = self.players.get(&cid).and_then(|a| self.players.get(&tc).map(|v| (a, v))) else {
+            return;
+        };
         if !v.alive || !v.ready || a.h.map != v.h.map || dist(a.h.x, a.h.y, v.h.x, v.h.y) > MELEE || !self.can_pk(cid, tc) {
             return;
         }
         let atk = a.h.attack(self.classes.get(a.h.class));
-        let def = v.h.defense(self.classes.get(v.h.class));
+        let def = v.h.defense(self.classes.get(v.class));
         let dmg = if rand::thread_rng().gen_bool(0.9) { (roll(atk) - def).max(1) } else { 0 };
         let (aid, ax, ay) = (a.h.id, a.h.x, a.h.y);
         self.pk_hit(cid, tc);
@@ -194,14 +197,17 @@ impl World {
     }
 
     pub(super) fn damage_player(&mut self, tc: u64, att: u32, ax: i32, ay: i32, dmg: i32) {
-        let v = &self.players[&tc];
+        let Some(v) = self.players.get(&tc) else { return; };
         let (vid, map) = (v.h.id, v.h.map);
         self.send_view(map, vid, 0x2797, &hit(att, vid, ax, ay, dmg));
         self.player_hurt(tc, att, dmg);
     }
 
     pub(super) fn player_hurt(&mut self, tc: u64, att: u32, dmg: i32) {
-        let v = self.players.get_mut(&tc).unwrap();
+        let Some(v) = self.players.get_mut(&tc) else { return; };
+        if !v.alive || dmg <= 0 {
+            return;
+        }
         let (vid, map) = (v.h.id, v.h.map);
         v.h.hp = (v.h.hp - dmg).max(0);
         let (hp, vx, vy) = (v.h.hp, v.h.x, v.h.y);
@@ -209,7 +215,6 @@ impl World {
         if hp == 0 {
             let innocent = !criminal(&self.players[&tc], Instant::now());
             self.send_view(map, vid, 0x2797, &kill(att, vid, vx, vy));
-            let v = self.players.get_mut(&tc).unwrap();
             v.alive = false;
             v.h.riding = false;
             v.revive_at = Some(Instant::now() + REVIVE);
