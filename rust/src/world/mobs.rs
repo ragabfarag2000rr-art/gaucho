@@ -9,6 +9,12 @@ use super::*;
 const GUARD_IDLE: Duration = Duration::from_millis(500);
 const WANTED: u64 = 0x1 | 0x8000;
 const MOB_LEASH: i32 = 20;
+const HOME_RADIUS: i32 = 5;
+
+fn direction_toward(from: (i32, i32), to: (i32, i32)) -> u8 {
+    let delta = ((to.0 - from.0).signum(), (to.1 - from.1).signum());
+    DIRS.iter().position(|&d| d == delta).unwrap_or(0) as u8
+}
 
 impl World {
     pub(super) fn tick(&mut self) {
@@ -91,12 +97,22 @@ impl World {
                     }
                     return;
                 }
-                let (home, wait) = (m.home, rng.gen_range(2000..5000));
+
+                // After a chase is abandoned or hits its leash, walk back to
+                // the spawn's home point instead of idling forever at the edge.
+                let home = m.home;
+                if dist(mx, my, home.0, home.1) > HOME_RADIUS {
+                    self.mobs[i].next_move = now + Duration::from_millis(t.move_ms);
+                    self.step_mob(i, direction_toward((mx, my), home));
+                    return;
+                }
+
+                let wait = rng.gen_range(2000..5000);
                 self.mobs[i].next_move = now + Duration::from_millis(wait);
                 if rng.gen_bool(0.4) {
                     let d = rng.gen_range(0..8u8);
                     let (dx, dy) = DIRS[d as usize];
-                    if dist(mx + dx, my + dy, home.0, home.1) <= 5 {
+                    if dist(mx + dx, my + dy, home.0, home.1) <= HOME_RADIUS {
                         self.step_mob(i, d);
                     }
                 }
@@ -121,10 +137,16 @@ impl World {
                         }
                     }
                 } else if now >= m.next_move {
-                    self.mobs[i].next_move = now + Duration::from_millis(move_ms);
-                    let (sx, sy) = ((tx - mx).signum(), (ty - my).signum());
-                    let d = DIRS.iter().position(|&v| v == (sx, sy)).unwrap_or(0) as u8;
-                    self.step_mob(i, d);
+                    let next = direction_toward((mx, my), (tx, ty));
+                    let (dx, dy) = DIRS[next as usize];
+                    if dist(mx + dx, my + dy, m.home.0, m.home.1) > MOB_LEASH {
+                        // Drop aggro; the next idle tick returns the monster home.
+                        self.mobs[i].ai = Ai::Idle;
+                        self.mobs[i].next_move = now + Duration::from_millis(move_ms);
+                    } else {
+                        self.mobs[i].next_move = now + Duration::from_millis(move_ms);
+                        self.step_mob(i, next);
+                    }
                 }
             }
         }
@@ -169,8 +191,6 @@ impl World {
         let m = &mut mobs[i];
         let (dx, dy) = DIRS[(dir as usize) % DIRS.len()];
         let (nx, ny) = (m.x + dx, m.y + dy);
-        // Keep chasing monsters near their spawn point instead of allowing an
-        // indefinitely long chase across a map.
         if dist(nx, ny, m.home.0, m.home.1) > MOB_LEASH {
             return;
         }
@@ -212,5 +232,18 @@ impl World {
                 let _ = p.tx.send(fx.clone());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direction_toward_uses_eight_way_grid() {
+        assert_eq!(direction_toward((10, 10), (10, 11)), 0);
+        assert_eq!(direction_toward((10, 10), (9, 11)), 1);
+        assert_eq!(direction_toward((10, 10), (9, 10)), 2);
+        assert_eq!(direction_toward((10, 10), (11, 9)), 5);
     }
 }
