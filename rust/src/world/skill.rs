@@ -275,7 +275,7 @@ impl World {
         let hits: Vec<(Hit, u32)> = match kind(&row) {
             Kind::Effect => vec![],
             Kind::Heal => self.heal_targets(cid, map, target, row.multi != 0),
-            Kind::Damage if area(&row) => self.area_targets(map, center, row.range.max(1)),
+            Kind::Damage if area(&row) => self.area_targets(cid, map, center, row.range.max(1)),
             Kind::Damage => target.map(|(_, _, h)| h).into_iter().filter(|h| !matches!(h, Hit::Hero(t) if !self.can_pk(cid, *t)))
                 .map(|h| (h, c.target)).collect(),
         };
@@ -338,13 +338,21 @@ impl World {
         }
     }
 
-    fn area_targets(&self, map: u32, (cx, cy): (i32, i32), radius: i32) -> Vec<(Hit, u32)> {
-        let mut found: Vec<(i32, usize)> = self.mobs_by_map.get(&map).into_iter().flatten()
+    fn area_targets(&self, cid: u64, map: u32, (cx, cy): (i32, i32), radius: i32) -> Vec<(Hit, u32)> {
+        let mut found: Vec<(i32, u32, Hit)> = self.mobs_by_map.get(&map).into_iter().flatten()
             .map(|&i| (&self.mobs[i], i))
             .filter(|(m, _)| !m.guard && !matches!(m.ai, Ai::Dead { .. }) && dist(m.x, m.y, cx, cy) <= radius)
-            .map(|(m, i)| (dist(m.x, m.y, cx, cy), i)).collect();
-        found.sort();
-        found.into_iter().take(MAX_TARGETS).map(|(_, i)| (Hit::Mob(i), self.mobs[i].id)).collect()
+            .map(|(m, i)| (dist(m.x, m.y, cx, cy), m.id, Hit::Mob(i)))
+            .collect();
+
+        let mut enemy_players: Vec<(i32, u32, Hit)> = self.players.iter()
+            .filter(|(target_cid, p)| **target_cid != cid && p.ready && p.alive && p.h.map == map && dist(p.h.x, p.h.y, cx, cy) <= radius && self.can_pk(cid, **target_cid))
+            .filter_map(|(target_cid, p)| self.by_id.get(&p.h.id).map(|owner| (dist(p.h.x, p.h.y, cx, cy), p.h.id, Hit::Hero(*owner))))
+            .collect();
+
+        found.append(&mut enemy_players);
+        found.sort_by_key(|(distance, id, _)| (*distance, *id));
+        found.into_iter().take(MAX_TARGETS).map(|(_, id, hit)| (hit, id)).collect()
     }
 
     fn heal(&mut self, tc: u64, id: u32, n: i32) {
