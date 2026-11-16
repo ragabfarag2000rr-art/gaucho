@@ -8,6 +8,7 @@ use super::*;
 
 const GUARD_IDLE: Duration = Duration::from_millis(500);
 const WANTED: u64 = 0x1 | 0x8000;
+const MOB_LEASH: i32 = 20;
 
 impl World {
     pub(super) fn tick(&mut self) {
@@ -79,7 +80,7 @@ impl World {
                 let t = &self.d.monsters[&m.typ];
                 let aggro = t.view.clamp(0, 8);
                 let near = hs.iter().filter(|h| h.3 && dist(h.1, h.2, mx, my) <= aggro)
-                    .min_by_key(|h| dist(h.1, h.2, mx, my));
+                    .min_by_key(|h| (dist(h.1, h.2, mx, my), h.0));
                 let mut rng = rand::thread_rng();
                 if let Some(h) = near {
                     self.mobs[i].ai = Ai::Chase(h.0);
@@ -139,10 +140,14 @@ impl World {
         let mobs = &self.mobs;
         let prey = self.mobs_by_map.get(&map).into_iter().flatten().copied()
             .filter(|&j| !mobs[j].guard && !matches!(mobs[j].ai, Ai::Dead { .. }) && dist(mobs[j].x, mobs[j].y, gx, gy) <= reach)
-            .min_by_key(|&j| dist(mobs[j].x, mobs[j].y, gx, gy));
+            .min_by_key(|&j| (dist(mobs[j].x, mobs[j].y, gx, gy), mobs[j].id));
         let criminal = || hs.iter().filter(|h| h.3 && dist(h.1, h.2, gx, gy) <= reach)
             .filter_map(|h| self.by_id.get(&h.0).copied())
-            .find(|c| status_word(&self.players[c]) & WANTED != 0);
+            .filter(|c| status_word(&self.players[c]) & WANTED != 0)
+            .min_by_key(|c| {
+                let p = &self.players[c];
+                (dist(p.h.x, p.h.y, gx, gy), p.h.id)
+            });
         if let Some(j) = prey {
             let (mid, def) = (self.mobs[j].id, self.d.monsters[&self.mobs[j].typ].def);
             let dmg = (roll(atk) - def).max(1);
@@ -162,11 +167,17 @@ impl World {
     pub(super) fn step_mob(&mut self, i: usize, dir: u8) {
         let World { players, mobs, d, .. } = self;
         let m = &mut mobs[i];
-        let (dx, dy) = DIRS[dir as usize];
-        m.x += dx;
-        m.y += dy;
-        m.dir = dir;
-        let w = frame(0x27dd, &walk(m.id, dir));
+        let (dx, dy) = DIRS[(dir as usize) % DIRS.len()];
+        let (nx, ny) = (m.x + dx, m.y + dy);
+        // Keep chasing monsters near their spawn point instead of allowing an
+        // indefinitely long chase across a map.
+        if dist(nx, ny, m.home.0, m.home.1) > MOB_LEASH {
+            return;
+        }
+        m.x = nx;
+        m.y = ny;
+        m.dir = dir % DIRS.len() as u8;
+        let w = frame(0x27dd, &walk(m.id, m.dir));
         for p in players.values_mut().filter(|p| p.ready && p.h.map == m.map) {
             let dd = dist(p.h.x, p.h.y, m.x, m.y);
             if p.seen.contains(&m.id) {
