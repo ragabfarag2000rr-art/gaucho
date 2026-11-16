@@ -189,7 +189,7 @@ impl World {
             return;
         }
         let atk = a.h.attack(self.classes.get(a.h.class));
-        let def = v.h.defense(self.classes.get(v.class));
+        let def = v.h.defense(self.classes.get(v.h.class));
         let dmg = if rand::thread_rng().gen_bool(0.9) { (roll(atk) - def).max(1) } else { 0 };
         let (aid, ax, ay) = (a.h.id, a.h.x, a.h.y);
         self.pk_hit(cid, tc);
@@ -204,29 +204,35 @@ impl World {
     }
 
     pub(super) fn player_hurt(&mut self, tc: u64, att: u32, dmg: i32) {
-        let Some(v) = self.players.get_mut(&tc) else { return; };
-        if !v.alive || dmg <= 0 {
+        let now = Instant::now();
+        let (vid, map, hp, vx, vy, died, name) = {
+            let Some(v) = self.players.get_mut(&tc) else { return; };
+            if !v.alive || dmg <= 0 {
+                return;
+            }
+            v.h.hp = (v.h.hp - dmg).max(0);
+            let died = v.h.hp == 0;
+            if died {
+                v.alive = false;
+                v.h.riding = false;
+                v.revive_at = Some(now + REVIVE);
+            }
+            (v.h.id, v.h.map, v.h.hp, v.h.x, v.h.y, died, v.h.name.clone())
+        };
+        self.send(tc, 0x27c0, &attrib(vid, &[(0, hp as u64)]));
+        if !died {
             return;
         }
-        let (vid, map) = (v.h.id, v.h.map);
-        v.h.hp = (v.h.hp - dmg).max(0);
-        let (hp, vx, vy) = (v.h.hp, v.h.x, v.h.y);
-        self.send(tc, 0x27c0, &attrib(vid, &[(0, hp as u64)]));
-        if hp == 0 {
-            let innocent = !criminal(&self.players[&tc], Instant::now());
-            self.send_view(map, vid, 0x2797, &kill(att, vid, vx, vy));
-            v.alive = false;
-            v.h.riding = false;
-            v.revive_at = Some(Instant::now() + REVIVE);
-            println!("[WORLD] {} died", v.h.name);
-            self.send_status(tc);
-            if let Some(&ac) = self.by_id.get(&att).filter(|_| innocent) {
-                self.pk_kill(ac);
-            }
-            for m in &mut self.mobs {
-                if m.ai == Ai::Chase(vid) {
-                    m.ai = Ai::Idle;
-                }
+        let innocent = !criminal(&self.players[&tc], now);
+        self.send_view(map, vid, 0x2797, &kill(att, vid, vx, vy));
+        println!("[WORLD] {name} died");
+        self.send_status(tc);
+        if let Some(&ac) = self.by_id.get(&att).filter(|_| innocent) {
+            self.pk_kill(ac);
+        }
+        for m in &mut self.mobs {
+            if m.ai == Ai::Chase(vid) {
+                m.ai = Ai::Idle;
             }
         }
     }
